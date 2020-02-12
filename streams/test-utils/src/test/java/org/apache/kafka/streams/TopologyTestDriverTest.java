@@ -33,7 +33,6 @@ import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.streams.errors.TopologyException;
 import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.Materialized;
-import org.apache.kafka.streams.processor.AbstractProcessor;
 import org.apache.kafka.streams.processor.Processor;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
@@ -41,7 +40,6 @@ import org.apache.kafka.streams.processor.PunctuationType;
 import org.apache.kafka.streams.processor.Punctuator;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
-import org.apache.kafka.streams.processor.To;
 import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
@@ -75,8 +73,6 @@ import static org.apache.kafka.common.utils.Utils.mkEntry;
 import static org.apache.kafka.common.utils.Utils.mkMap;
 import static org.apache.kafka.common.utils.Utils.mkProperties;
 import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -149,7 +145,7 @@ public class TopologyTestDriverTest {
         private final String topic;
         private final Headers headers;
 
-        Record(final ConsumerRecord<byte[], byte[]> consumerRecord,
+        Record(final ConsumerRecord consumerRecord,
                final long newOffset) {
             key = consumerRecord.key();
             value = consumerRecord.value();
@@ -160,7 +156,7 @@ public class TopologyTestDriverTest {
         }
 
         Record(final String newTopic,
-               final TestRecord<byte[], byte[]> consumerRecord,
+               final TestRecord consumerRecord,
                final long newOffset) {
             key = consumerRecord.key();
             value = consumerRecord.value();
@@ -235,7 +231,7 @@ public class TopologyTestDriverTest {
         }
     }
 
-    private final static class MockProcessor implements Processor<Object, Object> {
+    private final static class MockProcessor implements Processor {
         private final Collection<Punctuation> punctuations;
         private ProcessorContext context;
 
@@ -270,7 +266,7 @@ public class TopologyTestDriverTest {
 
     private final List<MockProcessor> mockProcessors = new ArrayList<>();
 
-    private final class MockProcessorSupplier implements ProcessorSupplier<Object, Object> {
+    private final class MockProcessorSupplier implements ProcessorSupplier {
         private final Collection<Punctuation> punctuations;
 
         private MockProcessorSupplier() {
@@ -282,7 +278,7 @@ public class TopologyTestDriverTest {
         }
 
         @Override
-        public Processor<Object, Object> get() {
+        public Processor get() {
             final MockProcessor mockProcessor = new MockProcessor(punctuations);
             mockProcessors.add(mockProcessor);
             return mockProcessor;
@@ -456,7 +452,7 @@ public class TopologyTestDriverTest {
         testDriver = new TopologyTestDriver(setupSourceSinkTopology(), config);
 
         pipeRecord(SOURCE_TOPIC_1, testRecord1);
-        final ProducerRecord<byte[], byte[]> outputRecord = testDriver.readRecord(SINK_TOPIC_1);
+        final ProducerRecord outputRecord = testDriver.readRecord(SINK_TOPIC_1);
 
         assertEquals(key1, outputRecord.key());
         assertEquals(value1, outputRecord.value());
@@ -709,7 +705,7 @@ public class TopologyTestDriverTest {
 
         pipeRecord(SOURCE_TOPIC_1, testRecord1);
 
-        ProducerRecord<byte[], byte[]> outputRecord = testDriver.readRecord(SINK_TOPIC_1);
+        ProducerRecord outputRecord = testDriver.readRecord(SINK_TOPIC_1);
         assertEquals(key1, outputRecord.key());
         assertEquals(value1, outputRecord.value());
         assertEquals(SINK_TOPIC_1, outputRecord.topic());
@@ -1213,7 +1209,7 @@ public class TopologyTestDriverTest {
         testDriver.pipeRecord(topic, new TestRecord<>(key, value, null, time),
                 new StringSerializer(), new LongSerializer(), null);
     }
-
+    
     private void compareKeyValue(final TestRecord<String, Long> record, final String key, final Long value) {
         assertThat(record.getKey(), equalTo(key));
         assertThat(record.getValue(), equalTo(value));
@@ -1341,9 +1337,9 @@ public class TopologyTestDriverTest {
         topology.addSource("sourceProcessor", "input-topic");
         topology.addProcessor(
             "storeProcessor",
-            new ProcessorSupplier<String, Long>() {
+            new ProcessorSupplier() {
                 @Override
-                public Processor<String, Long> get() {
+                public Processor get() {
                     return new Processor<String, Long>() {
                         private KeyValueStore<String, Long> store;
 
@@ -1476,7 +1472,7 @@ public class TopologyTestDriverTest {
         testDriver = new TopologyTestDriver(topology, config);
         pipeRecord(SOURCE_TOPIC_1, testRecord1);
 
-        final ProducerRecord<byte[], byte[]> outputRecord = testDriver.readRecord(SINK_TOPIC_1);
+        final ProducerRecord outputRecord = testDriver.readRecord(SINK_TOPIC_1);
         assertEquals(key1, outputRecord.key());
         assertEquals(value1, outputRecord.value());
         assertEquals(SINK_TOPIC_1, outputRecord.topic());
@@ -1525,175 +1521,5 @@ public class TopologyTestDriverTest {
 
         final TaskId taskId = new TaskId(0, 0);
         assertTrue(new File(appDir, taskId.toString()).exists());
-    }
-
-    @Test
-    public void shouldEnqueueLaterOutputsAfterEarlierOnes() {
-        final Properties properties = new Properties();
-        properties.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "dummy");
-        properties.setProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy");
-
-        final Topology topology = new Topology();
-        topology.addSource("source", new StringDeserializer(), new StringDeserializer(), "input");
-        topology.addProcessor(
-            "recursiveProcessor",
-            () -> new AbstractProcessor<String, String>() {
-                @Override
-                public void process(final String key, final String value) {
-                    if (!value.startsWith("recurse-")) {
-                        context().forward(key, "recurse-" + value, To.child("recursiveSink"));
-                    }
-                    context().forward(key, value, To.child("sink"));
-                }
-            },
-            "source"
-        );
-        topology.addSink("recursiveSink", "input", new StringSerializer(), new StringSerializer(), "recursiveProcessor");
-        topology.addSink("sink", "output", new StringSerializer(), new StringSerializer(), "recursiveProcessor");
-
-        try (final TopologyTestDriver topologyTestDriver = new TopologyTestDriver(topology, properties)) {
-            final TestInputTopic<String, String> in = topologyTestDriver.createInputTopic("input", new StringSerializer(), new StringSerializer());
-            final TestOutputTopic<String, String> out = topologyTestDriver.createOutputTopic("output", new StringDeserializer(), new StringDeserializer());
-
-            // given the topology above, we expect to see the output _first_ echo the input
-            // and _then_ print it with "recurse-" prepended.
-
-            in.pipeInput("B", "beta");
-            final List<KeyValue<String, String>> events = out.readKeyValuesToList();
-            assertThat(
-                events,
-                is(Arrays.asList(
-                    new KeyValue<>("B", "beta"),
-                    new KeyValue<>("B", "recurse-beta")
-                ))
-            );
-
-        }
-    }
-
-    @Test
-    public void shouldApplyGlobalUpdatesCorrectlyInRecursiveTopologies() {
-        final Properties properties = new Properties();
-        properties.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "dummy");
-        properties.setProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy");
-
-        final Topology topology = new Topology();
-        topology.addSource("source", new StringDeserializer(), new StringDeserializer(), "input");
-        topology.addGlobalStore(
-            Stores.keyValueStoreBuilder(Stores.inMemoryKeyValueStore("globule-store"), Serdes.String(), Serdes.String()).withLoggingDisabled(),
-            "globuleSource",
-            new StringDeserializer(),
-            new StringDeserializer(),
-            "globule-topic",
-            "globuleProcessor",
-            () -> new Processor<String, String>() {
-                private KeyValueStore<String, String> stateStore;
-
-                @SuppressWarnings("unchecked")
-                @Override
-                public void init(final ProcessorContext context) {
-                    stateStore = (KeyValueStore<String, String>) context.getStateStore("globule-store");
-                }
-
-                @Override
-                public void process(final String key, final String value) {
-                    stateStore.put(key, value);
-                }
-
-                @Override
-                public void close() {
-
-                }
-            }
-        );
-        topology.addProcessor(
-            "recursiveProcessor",
-            () -> new AbstractProcessor<String, String>() {
-                @Override
-                public void process(final String key, final String value) {
-                    if (!value.startsWith("recurse-")) {
-                        context().forward(key, "recurse-" + value, To.child("recursiveSink"));
-                    }
-                    context().forward(key, value, To.child("sink"));
-                    context().forward(key, value, To.child("globuleSink"));
-                }
-            },
-            "source"
-        );
-        topology.addSink("recursiveSink", "input", new StringSerializer(), new StringSerializer(), "recursiveProcessor");
-        topology.addSink("sink", "output", new StringSerializer(), new StringSerializer(), "recursiveProcessor");
-        topology.addSink("globuleSink", "globule-topic", new StringSerializer(), new StringSerializer(), "recursiveProcessor");
-
-        try (final TopologyTestDriver topologyTestDriver = new TopologyTestDriver(topology, properties)) {
-            final TestInputTopic<String, String> in = topologyTestDriver.createInputTopic("input", new StringSerializer(), new StringSerializer());
-            final TestOutputTopic<String, String> globalTopic = topologyTestDriver.createOutputTopic("globule-topic", new StringDeserializer(), new StringDeserializer());
-
-            in.pipeInput("A", "alpha");
-
-            // expect the global store to correctly reflect the last update
-            final KeyValueStore<String, String> keyValueStore = topologyTestDriver.getKeyValueStore("globule-store");
-            assertThat(keyValueStore, notNullValue());
-            assertThat(keyValueStore.get("A"), is("recurse-alpha"));
-
-            // and also just make sure the test really sent both events to the topic.
-            final List<KeyValue<String, String>> events = globalTopic.readKeyValuesToList();
-            assertThat(
-                events,
-                is(Arrays.asList(
-                    new KeyValue<>("A", "alpha"),
-                    new KeyValue<>("A", "recurse-alpha")
-                ))
-            );
-        }
-    }
-
-    @Test
-    public void shouldRespectTaskIdling() {
-        final Properties properties = new Properties();
-        properties.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "dummy");
-        properties.setProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy");
-
-        // This is the key to this test. Wall-clock time doesn't advance automatically in TopologyTestDriver,
-        // so with an idle time specified, TTD can't just expect all enqueued records to be processable.
-        properties.setProperty(StreamsConfig.MAX_TASK_IDLE_MS_CONFIG, "1000");
-
-        final Topology topology = new Topology();
-        topology.addSource("source1", new StringDeserializer(), new StringDeserializer(), "input1");
-        topology.addSource("source2", new StringDeserializer(), new StringDeserializer(), "input2");
-        topology.addSink("sink", "output", new StringSerializer(), new StringSerializer(), "source1", "source2");
-
-        try (final TopologyTestDriver topologyTestDriver = new TopologyTestDriver(topology, properties)) {
-            final TestInputTopic<String, String> in1 = topologyTestDriver.createInputTopic("input1", new StringSerializer(), new StringSerializer());
-            final TestInputTopic<String, String> in2 = topologyTestDriver.createInputTopic("input2", new StringSerializer(), new StringSerializer());
-            final TestOutputTopic<String, String> out = topologyTestDriver.createOutputTopic("output", new StringDeserializer(), new StringDeserializer());
-
-            in1.pipeInput("A", "alpha");
-            topologyTestDriver.advanceWallClockTime(Duration.ofMillis(1));
-
-            // only one input has records, and it's only been one ms
-            assertThat(out.readKeyValuesToList(), is(Collections.emptyList()));
-
-            in2.pipeInput("B", "beta");
-
-            // because both topics have records, we can process (even though it's only been one ms)
-            // but after processing A (the earlier record), we now only have one input queued, so
-            // task idling takes effect again
-            assertThat(
-                out.readKeyValuesToList(),
-                is(Collections.singletonList(
-                    new KeyValue<>("A", "alpha")
-                ))
-            );
-
-            topologyTestDriver.advanceWallClockTime(Duration.ofSeconds(1));
-
-            // now that one second has elapsed, the idle time has expired, and we can process B
-            assertThat(
-                out.readKeyValuesToList(),
-                is(Collections.singletonList(
-                    new KeyValue<>("B", "beta")
-                ))
-            );
-        }
     }
 }
